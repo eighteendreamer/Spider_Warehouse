@@ -4,6 +4,7 @@ import time
 from lxml import etree
 import csv
 from datetime import datetime
+from curl_cffi import requests as cffi_requests
 
 
 class LiepinSpider:
@@ -125,48 +126,86 @@ class LiepinSpider:
     def get_job_detail(self, job_url):
         """获取职位详情"""
         try:
-            response = requests.get(
-                job_url, 
-                headers=self.detail_headers, 
-                cookies=self.cookies,
-                timeout=10
+            # 使用curl_cffi模拟Chrome TLS指纹，绕过反爬检测
+            response = cffi_requests.get(
+                job_url,
+                headers=self.detail_headers,
+                impersonate="chrome",
+                timeout=15
             )
-            response.raise_for_status()
-            response.encoding = 'utf-8'
             
-            html = etree.HTML(response.text)
+            if response.status_code != 200:
+                print(f"    详情页状态码异常: {response.status_code}")
+                return {"responsibilities": "", "requirements": ""}
             
-            # 提取职位介绍内容
-            job_intro_element = html.xpath('//dd[@data-selector="job-intro-content"]')
-            if job_intro_element:
-                job_intro_text = job_intro_element[0].xpath('string(.)').strip()
-                
-                # 分割职位描述和任职要求
-                responsibilities = ""
-                requirements = ""
-                
-                if "任职要求" in job_intro_text:
-                    parts = job_intro_text.split("任职要求")
-                    responsibilities = parts[0].replace("职位描述", "").strip()
+            html_text = response.text
+            html = etree.HTML(html_text)
+            
+            # 尝试多种XPath提取职位介绍内容
+            job_intro_text = ""
+            
+            # XPath候选列表，按优先级排列
+            xpath_candidates = [
+                '//dd[@data-selector="job-intro-content"]',
+                '//div[@class="job-description"]',
+                '//div[contains(@class, "job-intro-content")]',
+                '//div[contains(@class, "job-description")]',
+                '//div[contains(@class, "job-detail")]',
+                '//div[contains(@class, "content-content")]',
+                '//div[@data-selector="job-intro-content"]',
+                '//section[contains(@class, "job-intro")]',
+            ]
+            
+            for xpath in xpath_candidates:
+                elements = html.xpath(xpath)
+                if elements:
+                    job_intro_text = elements[0].xpath('string(.)').strip()
+                    if job_intro_text:
+                        break
+            
+            # 如果XPath都没匹配到，尝试从页面所有文本中查找
+            if not job_intro_text:
+                # 尝试查找包含"职位描述"或"岗位职责"的大段文本
+                all_text_elements = html.xpath('//div[contains(text(), "职位描述") or contains(text(), "岗位职责")]')
+                for elem in all_text_elements:
+                    parent = elem.getparent()
+                    if parent is not None:
+                        parent_text = parent.xpath('string(.)').strip()
+                        if len(parent_text) > 50:
+                            job_intro_text = parent_text
+                            break
+            
+            if not job_intro_text:
+                # 保存调试HTML用于分析
+                debug_file = f"debug_detail_{int(time.time())}.html"
+                with open(debug_file, "w", encoding="utf-8") as f:
+                    f.write(html_text[:5000])
+                print(f"    未提取到详情内容，已保存调试文件: {debug_file}")
+                return {"responsibilities": "", "requirements": ""}
+            
+            # 分割职位描述和任职要求
+            responsibilities = ""
+            requirements = ""
+            
+            split_keywords = ["任职要求", "岗位要求", "职位要求", "任职资格", "岗位资格", "任职条件"]
+            
+            for keyword in split_keywords:
+                if keyword in job_intro_text:
+                    parts = job_intro_text.split(keyword, 1)
+                    responsibilities = parts[0].replace("职位描述", "").replace("岗位职责", "").strip()
                     requirements = parts[1].strip() if len(parts) > 1 else ""
-                else:
-                    responsibilities = job_intro_text.replace("职位描述", "").strip()
-                
-                return {
-                    "responsibilities": responsibilities,
-                    "requirements": requirements
-                }
-            else:
-                return {
-                    "responsibilities": "",
-                    "requirements": ""
-                }
-        except Exception as e:
-            print(f"获取职位详情失败 {job_url}: {e}")
+                    break
+            
+            if not responsibilities and not requirements:
+                responsibilities = job_intro_text.replace("职位描述", "").replace("岗位职责", "").strip()
+            
             return {
-                "responsibilities": "",
-                "requirements": ""
+                "responsibilities": responsibilities,
+                "requirements": requirements
             }
+        except Exception as e:
+            print(f"    获取职位详情失败 {job_url}: {e}")
+            return {"responsibilities": "", "requirements": ""}
     
     def parse_job_data(self, job_item, detail_info):
         """解析职位数据"""
