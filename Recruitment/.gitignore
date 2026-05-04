@@ -32,12 +32,6 @@ env/
 *.swo
 *~
 
-# 数据文件
-data/*.json
-data/*.csv
-data/*.xlsx
-!data/.gitkeep
-
 # 日志文件
 *.log
 
